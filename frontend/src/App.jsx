@@ -23,6 +23,9 @@ import {
   X,
 } from "lucide-react";
 
+const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+const apiUrl = (path) => `${API_BASE_URL}${path}`;
+
 const categoryIcons = {
   Physics: Atom,
   Mathematics: Calculator,
@@ -85,7 +88,7 @@ function App() {
 
   const loadQuizzes = useCallback(async () => {
     try {
-      const data = await readResponse(await fetch("/api/quizzes"));
+      const data = await readResponse(await fetch(apiUrl("/api/quizzes")));
       setQuizzes(data.quizzes);
       setApiError("");
     } catch (error) {
@@ -98,7 +101,7 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
-    fetch("/api/quizzes")
+    fetch(apiUrl("/api/quizzes"))
       .then(readResponse)
       .then((data) => {
         if (!cancelled) {
@@ -138,7 +141,7 @@ function App() {
 
     try {
       const data = await readResponse(
-        await fetch(`/api/quizzes/${run.quiz._id}/attempts`, {
+        await fetch(apiUrl(`/api/quizzes/${run.quiz._id}/attempts`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ answers: run.answers }),
@@ -184,7 +187,7 @@ function App() {
 
     try {
       const data = await readResponse(
-        await fetch(`/api/quizzes/${quizSummary._id}`)
+        await fetch(apiUrl(`/api/quizzes/${quizSummary._id}`))
       );
       const quiz = data.quiz;
       attemptSubmittedRef.current = false;
@@ -255,7 +258,7 @@ function App() {
 
     try {
       const data = await readResponse(
-        await fetch("/api/quizzes", {
+        await fetch(apiUrl("/api/quizzes"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(quizDraft),

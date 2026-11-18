@@ -26,4 +26,9 @@ automatically when the database has no quizzes.
    npm run dev
    ```
 
-Vite proxies `/api` requests to `http://localhost:8080`.
+Vite proxies `/api` requests to `http://localhost:8080` when `VITE_API_URL` is
+not set. To use a deployed API locally, copy `.env.example` to `.env`.
+
+For a Render Static Site, set the `VITE_API_URL` environment variable to the
+backend service URL. Set the backend service's `FRONTEND_URL` to the Static
+Site URL so the API's CORS policy allows the frontend.
