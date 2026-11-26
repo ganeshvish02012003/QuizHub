@@ -31,4 +31,7 @@ not set. To use a deployed API locally, copy `.env.example` to `.env`.
 
 For a Render Static Site, set the `VITE_API_URL` environment variable to the
 backend service URL. Set the backend service's `FRONTEND_URL` to the Static
-Site URL so the API's CORS policy allows the frontend.
+Site origin (the `https://` URL without a trailing slash) so the API's CORS
+policy allows the frontend. Keep the backend's `JWT_SECRET` stable across
+deploys; production authentication cookies are secure, cross-site, and
+partitioned for browsers that restrict third-party cookies.

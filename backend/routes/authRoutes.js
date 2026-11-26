@@ -15,11 +15,21 @@ function authToken(userId) {
   );
 }
 
+function authCookieOptions() {
+  const isProduction = process.env.NODE_ENV === "production";
+
+  return {
+    httpOnly: true,
+    sameSite: isProduction ? "none" : "lax",
+    secure: isProduction,
+    partitioned: isProduction,
+    path: "/",
+  };
+}
+
 function setAuthCookie(res, token) {
   res.cookie("quizhub_token", token, {
-    httpOnly: true,
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    secure: process.env.NODE_ENV === "production",
+    ...authCookieOptions(),
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 }
@@ -75,7 +85,7 @@ router.post("/login", async (req, res) => {
 });
 
 router.post("/logout", (req, res) => {
-  res.clearCookie("quizhub_token");
+  res.clearCookie("quizhub_token", authCookieOptions());
   res.json({ success: true });
 });
 
