@@ -7,21 +7,26 @@ import {
   Brain,
   Calculator,
   Check,
-  ChevronLeft,
-  ChevronRight,
-  CircleCheck,
-  CircleX,
   Clock3,
   LoaderCircle,
+  LogIn,
+  LogOut,
   Menu,
   Plus,
-  RotateCcw,
   Search,
   Sparkles,
-  Trash2,
   Trophy,
+  UserRound,
   X,
 } from "lucide-react";
+import { AuthDialog, ProfileDialog } from "./components/AccountDialogs.jsx";
+import QuizBuilderDialog from "./components/QuizBuilderDialog.jsx";
+import QuizCard from "./components/QuizCard.jsx";
+import {
+  QuizModeDialog,
+  QuizResultDialog,
+  QuizRunnerDialog,
+} from "./components/QuizFlowDialogs.jsx";
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 const apiUrl = (path) => `${API_BASE_URL}${path}`;
@@ -36,6 +41,7 @@ const makeQuestion = () => ({
   text: "",
   options: ["", "", "", ""],
   correctIndex: 0,
+  explanation: "",
 });
 
 const makeQuizDraft = () => ({
@@ -57,12 +63,6 @@ async function readResponse(response) {
   return data;
 }
 
-function formatTime(seconds) {
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
-}
-
 function App() {
   const [quizzes, setQuizzes] = useState([]);
   const [loadingQuizzes, setLoadingQuizzes] = useState(true);
@@ -78,7 +78,19 @@ function App() {
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [submittingAttempt, setSubmittingAttempt] = useState(false);
   const [attemptError, setAttemptError] = useState("");
+  const [practiceCheckError, setPracticeCheckError] = useState("");
   const [result, setResult] = useState(null);
+  const [quizToStart, setQuizToStart] = useState(null);
+  const [authUser, setAuthUser] = useState(null);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState("login");
+  const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileData, setProfileData] = useState(null);
+  const [editingQuizId, setEditingQuizId] = useState(null);
+  const [quizMenuOpenId, setQuizMenuOpenId] = useState(null);
   const activeRunRef = useRef(activeRun);
   const attemptSubmittedRef = useRef(false);
 
@@ -86,9 +98,20 @@ function App() {
     activeRunRef.current = activeRun;
   }, [activeRun]);
 
+  useEffect(() => {
+    fetch(apiUrl("/api/auth/me"), { credentials: "include" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (data?.user) setAuthUser(data.user);
+      })
+      .catch(() => {});
+  }, []);
+
   const loadQuizzes = useCallback(async () => {
     try {
-      const data = await readResponse(await fetch(apiUrl("/api/quizzes")));
+      const data = await readResponse(
+        await fetch(apiUrl("/api/quizzes"), { credentials: "include" })
+      );
       setQuizzes(data.quizzes);
       setApiError("");
     } catch (error) {
@@ -101,7 +124,7 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
-    fetch(apiUrl("/api/quizzes"))
+    fetch(apiUrl("/api/quizzes"), { credentials: "include" })
       .then(readResponse)
       .then((data) => {
         if (!cancelled) {
@@ -144,11 +167,12 @@ function App() {
         await fetch(apiUrl(`/api/quizzes/${run.quiz._id}/attempts`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "include",
           body: JSON.stringify({ answers: run.answers }),
         })
       );
 
-      setResult({ quiz: run.quiz, ...data });
+      setResult({ quiz: run.quiz, mode: run.mode, ...data });
       setActiveRun(null);
     } catch (error) {
       setAttemptError(error.message);
@@ -182,41 +206,102 @@ function App() {
     ...new Set(quizzes.map((quiz) => quiz.subject)),
   ];
 
-  async function startQuiz(quizSummary) {
+  async function startQuiz(quizSummary, mode) {
     setApiError("");
 
     try {
       const data = await readResponse(
-        await fetch(apiUrl(`/api/quizzes/${quizSummary._id}`))
+        await fetch(apiUrl(`/api/quizzes/${quizSummary._id}`), {
+          credentials: "include",
+        })
       );
       const quiz = data.quiz;
       attemptSubmittedRef.current = false;
       setAttemptError("");
+      setPracticeCheckError("");
       setResult(null);
       setRemainingSeconds(quiz.durationMinutes * 60);
-      setActiveRun({
+      const newRun = {
         quiz,
+        mode,
         answers: Array(quiz.questions.length).fill(-1),
         currentIndex: 0,
-      });
+        feedback: {},
+        checkingAnswer: false,
+        runKey: Symbol(),
+      };
+      activeRunRef.current = newRun;
+      setActiveRun(newRun);
+      setQuizToStart(null);
     } catch (error) {
       setApiError(error.message);
     }
   }
 
-  function chooseAnswer(answerIndex) {
-    setActiveRun((run) => {
-      if (!run || submittingAttempt) return run;
+  async function chooseAnswer(answerIndex) {
+    const run = activeRunRef.current;
+    if (!run || submittingAttempt || run.checkingAnswer) return;
 
-      const answers = [...run.answers];
-      answers[run.currentIndex] = answerIndex;
-      return { ...run, answers };
-    });
+    const questionIndex = run.currentIndex;
+    if (run.mode === "practice" && run.feedback[questionIndex]) return;
+
+    const answers = [...run.answers];
+    answers[questionIndex] = answerIndex;
+    const updatedRun = {
+      ...run,
+      answers,
+      checkingAnswer: run.mode === "practice",
+    };
+    activeRunRef.current = updatedRun;
+    setActiveRun(updatedRun);
+    setPracticeCheckError("");
+
+    if (run.mode !== "practice") return;
+
+    try {
+      const feedback = await readResponse(
+        await fetch(apiUrl(`/api/quizzes/${run.quiz._id}/check-answer`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ questionIndex, answerIndex }),
+        })
+      );
+      setPracticeCheckError("");
+      setActiveRun((current) => {
+        if (
+          !current ||
+          current.runKey !== run.runKey ||
+          current.quiz._id !== run.quiz._id ||
+          current.currentIndex !== questionIndex
+        ) {
+          return current;
+        }
+        return {
+          ...current,
+          checkingAnswer: false,
+          feedback: { ...current.feedback, [questionIndex]: feedback },
+        };
+      });
+    } catch (error) {
+      const current = activeRunRef.current;
+      if (
+        current &&
+        current.runKey === run.runKey &&
+        current.currentIndex === questionIndex
+      ) {
+        const updated = { ...current, checkingAnswer: false };
+        activeRunRef.current = updated;
+        setActiveRun(updated);
+      }
+      setPracticeCheckError(error.message);
+    }
   }
 
   function closeQuiz() {
     setActiveRun(null);
     setAttemptError("");
+    setPracticeCheckError("");
   }
 
   function updateQuestion(questionIndex, update) {
@@ -258,18 +343,29 @@ function App() {
 
     try {
       const data = await readResponse(
-        await fetch(apiUrl("/api/quizzes"), {
-          method: "POST",
+        await fetch(
+          apiUrl(editingQuizId ? `/api/quizzes/${editingQuizId}` : "/api/quizzes"),
+          {
+          method: editingQuizId ? "PUT" : "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(quizDraft),
-        })
+          credentials: "include",
+          }
+        )
       );
 
-      setQuizzes((current) => [data.quiz, ...current]);
+      setQuizzes((current) =>
+        editingQuizId
+          ? current.map((quiz) =>
+              quiz._id === editingQuizId ? data.quiz : quiz
+            )
+          : [data.quiz, ...current]
+      );
       setCategory("All Quizzes");
       setSearch("");
       setBuilderOpen(false);
       setQuizDraft(makeQuizDraft());
+      setEditingQuizId(null);
       document.getElementById("explore")?.scrollIntoView({ behavior: "smooth" });
     } catch (error) {
       setBuilderError(error.message);
@@ -279,12 +375,109 @@ function App() {
   }
 
   function openBuilder() {
+    if (!authUser) {
+      setAuthMode("signup");
+      setAuthError("");
+      setAuthOpen(true);
+      setMenuOpen(false);
+      return;
+    }
     setBuilderError("");
+    setEditingQuizId(null);
+    setQuizDraft(makeQuizDraft());
     setBuilderOpen(true);
     setMenuOpen(false);
   }
 
+  async function submitAuth(event) {
+    event.preventDefault();
+    setAuthLoading(true);
+    setAuthError("");
+
+    try {
+      const data = await readResponse(
+        await fetch(apiUrl(`/api/auth/${authMode}`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(authForm),
+        })
+      );
+      setAuthUser(data.user);
+      setAuthOpen(false);
+      setAuthForm({ name: "", email: "", password: "" });
+    } catch (error) {
+      setAuthError(error.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function logout() {
+    await fetch(apiUrl("/api/auth/logout"), {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {});
+    setAuthUser(null);
+    setProfileOpen(false);
+  }
+
+  async function openProfile() {
+    setProfileOpen(true);
+    setMenuOpen(false);
+    try {
+      const data = await readResponse(
+        await fetch(apiUrl("/api/auth/me"), { credentials: "include" })
+      );
+      setProfileData(data);
+    } catch (error) {
+      setApiError(error.message);
+    }
+  }
+
+  async function editQuiz(quiz) {
+    try {
+      const data = await readResponse(
+        await fetch(apiUrl(`/api/quizzes/${quiz._id}/edit`), {
+          credentials: "include",
+        })
+      );
+      setQuizDraft({
+        title: data.quiz.title,
+        subject: data.quiz.subject,
+        description: data.quiz.description,
+        durationMinutes: data.quiz.durationMinutes,
+        level: data.quiz.level,
+        questions: data.quiz.questions,
+      });
+      setEditingQuizId(quiz._id);
+      setBuilderError("");
+      setBuilderOpen(true);
+    } catch (error) {
+      setApiError(error.message);
+    }
+  }
+
+  async function deleteQuiz(quiz) {
+    if (!window.confirm(`Delete "${quiz.title}"? This cannot be undone.`)) return;
+
+    try {
+      await readResponse(
+        await fetch(apiUrl(`/api/quizzes/${quiz._id}`), {
+          method: "DELETE",
+          credentials: "include",
+        })
+      );
+      setQuizzes((current) => current.filter((item) => item._id !== quiz._id));
+      if (profileOpen) await openProfile();
+    } catch (error) {
+      setApiError(error.message);
+    }
+  }
+
   const currentQuestion = activeRun?.quiz.questions[activeRun.currentIndex];
+  const currentFeedback =
+    activeRun?.feedback[activeRun.currentIndex] || null;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -324,6 +517,35 @@ function App() {
             <Plus size={17} /> Create quiz
           </button>
 
+          {authUser ? (
+            <div className="hidden items-center gap-2 md:flex">
+              <button
+                onClick={openProfile}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold hover:bg-slate-50"
+              >
+                <UserRound size={17} /> {authUser.name}
+              </button>
+              <button
+                onClick={logout}
+                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+                aria-label="Log out"
+              >
+                <LogOut size={19} />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                setAuthMode("login");
+                setAuthError("");
+                setAuthOpen(true);
+              }}
+              className="hidden items-center gap-2 rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold hover:bg-slate-50 md:inline-flex"
+            >
+              <LogIn size={17} /> Log in
+            </button>
+          )}
+
           <button
             onClick={() => setMenuOpen((open) => !open)}
             className="rounded-lg p-2 hover:bg-slate-100 md:hidden"
@@ -356,6 +578,34 @@ function App() {
             >
               Create a quiz
             </button>
+            {authUser ? (
+              <>
+                <button
+                  onClick={openProfile}
+                  className="w-full rounded-lg p-3 text-left font-semibold hover:bg-slate-100"
+                >
+                  My profile
+                </button>
+                <button
+                  onClick={logout}
+                  className="w-full rounded-lg p-3 text-left font-semibold text-slate-600 hover:bg-slate-100"
+                >
+                  Log out
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => {
+                  setAuthMode("login");
+                  setAuthError("");
+                  setAuthOpen(true);
+                  setMenuOpen(false);
+                }}
+                className="w-full rounded-lg border border-slate-200 p-3 text-left font-semibold"
+              >
+                Log in
+              </button>
+            )}
           </div>
         )}
       </header>
@@ -555,43 +805,29 @@ function App() {
                 const Icon = categoryIcons[quiz.subject] || Brain;
 
                 return (
-                  <article
+                  <QuizCard
                     key={quiz._id}
-                    className="group rounded-2xl border border-slate-200 bg-white p-6 transition hover:-translate-y-1 hover:border-violet-200 hover:shadow-xl hover:shadow-slate-200/60"
-                  >
-                    <div className="flex items-start justify-between">
-                      <span className="rounded-xl bg-violet-100 p-3 text-violet-700">
-                        <Icon size={26} />
-                      </span>
-                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-                        {quiz.level}
-                      </span>
-                    </div>
-
-                    <p className="mt-5 text-sm font-semibold text-violet-600">
-                      {quiz.subject}
-                    </p>
-                    <h3 className="mt-2 text-xl font-bold">{quiz.title}</h3>
-                    <p className="mt-3 min-h-12 text-sm leading-6 text-slate-500">
-                      {quiz.description}
-                    </p>
-
-                    <div className="mt-5 flex flex-wrap gap-4 border-t border-slate-100 pt-5 text-sm text-slate-500">
-                      <span className="flex items-center gap-1.5">
-                        <BookOpen size={16} /> {quiz.questionCount} questions
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <Clock3 size={16} /> {quiz.durationMinutes} min
-                      </span>
-                    </div>
-
-                    <button
-                      onClick={() => startQuiz(quiz)}
-                      className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 font-semibold text-white transition group-hover:bg-violet-600"
-                    >
-                      Start quiz <ArrowRight size={17} />
-                    </button>
-                  </article>
+                    quiz={quiz}
+                    Icon={Icon}
+                    menuOpen={quizMenuOpenId === quiz._id}
+                    onToggleMenu={() =>
+                      setQuizMenuOpenId((openId) =>
+                        openId === quiz._id ? null : quiz._id
+                      )
+                    }
+                    onEdit={() => {
+                      setQuizMenuOpenId(null);
+                      editQuiz(quiz);
+                    }}
+                    onDelete={() => {
+                      setQuizMenuOpenId(null);
+                      deleteQuiz(quiz);
+                    }}
+                    onStart={() => {
+                      setQuizMenuOpenId(null);
+                      setQuizToStart(quiz);
+                    }}
+                  />
                 );
               })}
             </div>
@@ -652,476 +888,82 @@ function App() {
         </div>
       </footer>
 
-      {activeRun && currentQuestion && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/60 p-4">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="quiz-title"
-            className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-sm font-semibold text-violet-600">
-                  {activeRun.quiz.subject} · Question{" "}
-                  {activeRun.currentIndex + 1} of {activeRun.quiz.questions.length}
-                </p>
-                <h2 id="quiz-title" className="mt-2 text-2xl font-extrabold">
-                  {activeRun.quiz.title}
-                </h2>
-              </div>
-              <div
-                className={`flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 font-bold tabular-nums ${
-                  remainingSeconds <= 30
-                    ? "bg-rose-100 text-rose-700"
-                    : "bg-violet-50 text-violet-700"
-                }`}
-                aria-live="polite"
-                aria-label={`${formatTime(remainingSeconds)} remaining`}
-              >
-                <Clock3 size={18} />
-                {formatTime(remainingSeconds)}
-              </div>
-            </div>
+      <QuizModeDialog
+        quiz={quizToStart}
+        onClose={() => setQuizToStart(null)}
+        onStart={startQuiz}
+      />
+      <QuizRunnerDialog
+        activeRun={activeRun}
+        currentQuestion={currentQuestion}
+        currentFeedback={currentFeedback}
+        remainingSeconds={remainingSeconds}
+        submittingAttempt={submittingAttempt}
+        attemptError={attemptError}
+        practiceCheckError={practiceCheckError}
+        onChooseAnswer={chooseAnswer}
+        onClose={closeQuiz}
+        onNavigate={(currentIndex) =>
+          setActiveRun((run) => ({
+            ...run,
+            currentIndex: Math.min(
+              run.quiz.questions.length - 1,
+              Math.max(0, currentIndex)
+            ),
+          }))
+        }
+        onSubmit={submitAttempt}
+      />
+      <QuizResultDialog
+        result={result}
+        onExplore={() => {
+          setResult(null);
+          document
+            .getElementById("explore")
+            ?.scrollIntoView({ behavior: "smooth" });
+        }}
+        onPlayAgain={() => {
+          const quiz = result.quiz;
+          setResult(null);
+          startQuiz(quiz, result.mode);
+        }}
+      />
 
-            <div className="mt-6 h-2 overflow-hidden rounded-full bg-slate-100">
-              <div
-                className="h-full rounded-full bg-violet-600 transition-all"
-                style={{
-                  width: `${((activeRun.currentIndex + 1) / activeRun.quiz.questions.length) * 100}%`,
-                }}
-              />
-            </div>
-
-            <h3 className="mt-8 text-xl font-bold leading-8">
-              {currentQuestion.text}
-            </h3>
-            <div className="mt-5 space-y-3">
-              {currentQuestion.options.map((option, index) => {
-                const selected = activeRun.answers[activeRun.currentIndex] === index;
-
-                return (
-                  <button
-                    key={`${index}-${option}`}
-                    onClick={() => chooseAnswer(index)}
-                    disabled={submittingAttempt}
-                    className={`flex w-full items-center gap-3 rounded-xl border p-4 text-left transition ${
-                      selected
-                        ? "border-violet-500 bg-violet-50 text-violet-900"
-                        : "border-slate-200 hover:border-violet-300 hover:bg-slate-50"
-                    }`}
-                  >
-                    <span
-                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm font-bold ${
-                        selected
-                          ? "bg-violet-600 text-white"
-                          : "bg-slate-100 text-slate-600"
-                      }`}
-                    >
-                      {String.fromCharCode(65 + index)}
-                    </span>
-                    <span className="font-medium">{option}</span>
-                    {selected && <Check className="ml-auto" size={18} />}
-                  </button>
-                );
-              })}
-            </div>
-
-            {attemptError && (
-              <div
-                role="alert"
-                className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm font-medium text-rose-700"
-              >
-                <span>{attemptError}</span>
-                <button
-                  onClick={submitAttempt}
-                  className="rounded-lg border border-rose-200 px-3 py-2 hover:bg-rose-50"
-                >
-                  Retry submission
-                </button>
-              </div>
-            )}
-
-            <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5">
-              <button
-                onClick={closeQuiz}
-                className="rounded-xl px-4 py-3 font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Exit quiz
-              </button>
-              <div className="flex gap-3">
-                <button
-                  onClick={() =>
-                    setActiveRun((run) => ({
-                      ...run,
-                      currentIndex: Math.max(0, run.currentIndex - 1),
-                    }))
-                  }
-                  disabled={activeRun.currentIndex === 0 || submittingAttempt}
-                  className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-4 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <ChevronLeft size={18} /> Back
-                </button>
-                {activeRun.currentIndex < activeRun.quiz.questions.length - 1 ? (
-                  <button
-                    onClick={() =>
-                      setActiveRun((run) => ({
-                        ...run,
-                        currentIndex: Math.min(
-                          run.quiz.questions.length - 1,
-                          run.currentIndex + 1
-                        ),
-                      }))
-                    }
-                    disabled={submittingAttempt}
-                    className="inline-flex items-center gap-1 rounded-xl bg-violet-600 px-5 py-3 font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
-                  >
-                    Next <ChevronRight size={18} />
-                  </button>
-                ) : (
-                  <button
-                    onClick={submitAttempt}
-                    disabled={submittingAttempt}
-                    className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-3 font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
-                  >
-                    {submittingAttempt && (
-                      <LoaderCircle className="animate-spin" size={18} />
-                    )}
-                    Submit quiz
-                  </button>
-                )}
-              </div>
-            </div>
-            {remainingSeconds === 0 && (
-              <p className="mt-3 text-right text-sm text-slate-500">
-                Time is up. Your answers are being submitted.
-              </p>
-            )}
-          </section>
-        </div>
-      )}
-
-      {result && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/60 p-4">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="result-title"
-            className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8"
-          >
-            <div className="text-center">
-              <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-100 text-amber-600">
-                <Trophy size={32} />
-              </span>
-              <h2 id="result-title" className="mt-4 text-3xl font-extrabold">
-                Quiz complete!
-              </h2>
-              <p className="mt-2 text-slate-500">{result.quiz.title}</p>
-              <p className="mt-4 text-5xl font-extrabold text-violet-600">
-                {result.percentage}%
-              </p>
-              <p className="mt-2 font-semibold text-slate-700">
-                {result.score} out of {result.total} correct
-              </p>
-            </div>
-
-            <div className="mt-8 space-y-4">
-              <h3 className="text-lg font-bold">Answer review</h3>
-              {result.results.map((question, index) => {
-                const correct =
-                  question.selectedIndex === question.correctIndex;
-
-                return (
-                  <article
-                    key={`${index}-${question.text}`}
-                    className="rounded-2xl border border-slate-200 p-4"
-                  >
-                    <div className="flex items-start gap-3">
-                      {correct ? (
-                        <CircleCheck className="mt-0.5 shrink-0 text-emerald-600" />
-                      ) : (
-                        <CircleX className="mt-0.5 shrink-0 text-rose-600" />
-                      )}
-                      <div>
-                        <p className="font-semibold">
-                          {index + 1}. {question.text}
-                        </p>
-                        <p className="mt-2 text-sm text-slate-600">
-                          Your answer:{" "}
-                          {question.selectedIndex < 0
-                            ? "Not answered"
-                            : question.options[question.selectedIndex]}
-                        </p>
-                        {!correct && (
-                          <p className="mt-1 text-sm font-medium text-emerald-700">
-                            Correct answer: {question.options[question.correctIndex]}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-
-            <div className="mt-7 flex flex-wrap justify-end gap-3">
-              <button
-                onClick={() => {
-                  setResult(null);
-                  document
-                    .getElementById("explore")
-                    ?.scrollIntoView({ behavior: "smooth" });
-                }}
-                className="rounded-xl border border-slate-200 px-5 py-3 font-semibold hover:bg-slate-50"
-              >
-                Explore quizzes
-              </button>
-              <button
-                onClick={() => {
-                  const quiz = result.quiz;
-                  setResult(null);
-                  startQuiz(quiz);
-                }}
-                className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-3 font-semibold text-white hover:bg-violet-700"
-              >
-                <RotateCcw size={17} /> Play again
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-
-      {builderOpen && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/60 p-4">
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="builder-title"
-            className="max-h-[94vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-sm font-bold uppercase tracking-widest text-violet-600">
-                  Quiz creator
-                </p>
-                <h2 id="builder-title" className="mt-2 text-2xl font-extrabold">
-                  Build a quiz
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Add four choices to each question and select the correct one.
-                </p>
-              </div>
-              <button
-                onClick={() => setBuilderOpen(false)}
-                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
-                aria-label="Close quiz creator"
-              >
-                <X />
-              </button>
-            </div>
-
-            <form onSubmit={createQuiz} className="mt-6 space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="space-y-2 text-sm font-semibold">
-                  Quiz title
-                  <input
-                    required
-                    maxLength={100}
-                    value={quizDraft.title}
-                    onChange={(event) =>
-                      setQuizDraft((draft) => ({
-                        ...draft,
-                        title: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none focus:border-violet-500"
-                    placeholder="e.g. Space and astronomy"
-                  />
-                </label>
-                <label className="space-y-2 text-sm font-semibold">
-                  Subject
-                  <input
-                    required
-                    maxLength={60}
-                    value={quizDraft.subject}
-                    onChange={(event) =>
-                      setQuizDraft((draft) => ({
-                        ...draft,
-                        subject: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none focus:border-violet-500"
-                    placeholder="e.g. Science"
-                  />
-                </label>
-                <label className="space-y-2 text-sm font-semibold sm:col-span-2">
-                  Description
-                  <textarea
-                    required
-                    maxLength={500}
-                    rows={2}
-                    value={quizDraft.description}
-                    onChange={(event) =>
-                      setQuizDraft((draft) => ({
-                        ...draft,
-                        description: event.target.value,
-                      }))
-                    }
-                    className="w-full resize-y rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none focus:border-violet-500"
-                    placeholder="What will learners practice?"
-                  />
-                </label>
-                <label className="space-y-2 text-sm font-semibold">
-                  Time limit (minutes)
-                  <input
-                    required
-                    type="number"
-                    min="1"
-                    max="180"
-                    value={quizDraft.durationMinutes}
-                    onChange={(event) =>
-                      setQuizDraft((draft) => ({
-                        ...draft,
-                        durationMinutes: Number(event.target.value),
-                      }))
-                    }
-                    className="w-full rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none focus:border-violet-500"
-                  />
-                </label>
-                <label className="space-y-2 text-sm font-semibold">
-                  Difficulty
-                  <select
-                    value={quizDraft.level}
-                    onChange={(event) =>
-                      setQuizDraft((draft) => ({
-                        ...draft,
-                        level: event.target.value,
-                      }))
-                    }
-                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 font-normal outline-none focus:border-violet-500"
-                  >
-                    <option>Beginner</option>
-                    <option>Intermediate</option>
-                    <option>Advanced</option>
-                  </select>
-                </label>
-              </div>
-
-              <div className="space-y-5">
-                {quizDraft.questions.map((question, questionIndex) => (
-                  <fieldset
-                    key={questionIndex}
-                    className="rounded-2xl border border-slate-200 p-4 sm:p-5"
-                  >
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <legend className="font-bold">
-                        Question {questionIndex + 1}
-                      </legend>
-                      {quizDraft.questions.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => removeQuestion(questionIndex)}
-                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-semibold text-rose-600 hover:bg-rose-50"
-                        >
-                          <Trash2 size={16} /> Remove
-                        </button>
-                      )}
-                    </div>
-
-                    <label className="sr-only" htmlFor={`question-${questionIndex}`}>
-                      Question text
-                    </label>
-                    <input
-                      id={`question-${questionIndex}`}
-                      required
-                      maxLength={500}
-                      value={question.text}
-                      onChange={(event) =>
-                        updateQuestion(questionIndex, {
-                          text: event.target.value,
-                        })
-                      }
-                      className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-violet-500"
-                      placeholder="Write your question"
-                    />
-
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      {question.options.map((option, optionIndex) => (
-                        <label
-                          key={optionIndex}
-                          className={`flex items-center gap-3 rounded-xl border p-3 ${
-                            question.correctIndex === optionIndex
-                              ? "border-emerald-400 bg-emerald-50"
-                              : "border-slate-200"
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name={`correct-answer-${questionIndex}`}
-                            value={optionIndex}
-                            checked={question.correctIndex === optionIndex}
-                            onChange={() =>
-                              updateQuestion(questionIndex, {
-                                correctIndex: optionIndex,
-                              })
-                            }
-                            aria-label={`Set option ${optionIndex + 1} as correct`}
-                            className="accent-emerald-600"
-                          />
-                          <input
-                            required
-                            maxLength={200}
-                            value={option}
-                            onChange={(event) =>
-                              updateOption(
-                                questionIndex,
-                                optionIndex,
-                                event.target.value
-                              )
-                            }
-                            className="min-w-0 flex-1 bg-transparent text-sm outline-none"
-                            placeholder={`Option ${String.fromCharCode(65 + optionIndex)}`}
-                          />
-                        </label>
-                      ))}
-                    </div>
-                    <p className="mt-3 text-xs text-slate-500">
-                      Select the circle beside the correct answer.
-                    </p>
-                  </fieldset>
-                ))}
-              </div>
-
-              {builderError && (
-                <p role="alert" className="text-sm font-medium text-rose-700">
-                  {builderError}
-                </p>
-              )}
-
-              <div className="flex flex-wrap justify-between gap-3 border-t border-slate-100 pt-5">
-                <button
-                  type="button"
-                  onClick={addQuestion}
-                  disabled={quizDraft.questions.length >= 50}
-                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-3 font-semibold hover:bg-slate-50 disabled:opacity-50"
-                >
-                  <Plus size={17} /> Add question
-                </button>
-                <button
-                  type="submit"
-                  disabled={savingQuiz}
-                  className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-3 font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
-                >
-                  {savingQuiz && (
-                    <LoaderCircle className="animate-spin" size={18} />
-                  )}
-                  Save quiz
-                </button>
-              </div>
-            </form>
-          </section>
-        </div>
-      )}
+      <AuthDialog
+        open={authOpen}
+        mode={authMode}
+        form={authForm}
+        setForm={setAuthForm}
+        error={authError}
+        loading={authLoading}
+        onClose={() => setAuthOpen(false)}
+        onSubmit={submitAuth}
+        onToggleMode={() => {
+          setAuthMode(authMode === "login" ? "signup" : "login");
+          setAuthError("");
+        }}
+      />
+      <ProfileDialog
+        open={profileOpen}
+        profileData={profileData}
+        authUser={authUser}
+        onClose={() => setProfileOpen(false)}
+        onDeleteQuiz={deleteQuiz}
+      />
+      <QuizBuilderDialog
+        open={builderOpen}
+        editingQuizId={editingQuizId}
+        quizDraft={quizDraft}
+        setQuizDraft={setQuizDraft}
+        builderError={builderError}
+        savingQuiz={savingQuiz}
+        onClose={() => setBuilderOpen(false)}
+        onSubmit={createQuiz}
+        onAddQuestion={addQuestion}
+        onRemoveQuestion={removeQuestion}
+        onUpdateQuestion={updateQuestion}
+        onUpdateOption={updateOption}
+      />
     </div>
   );
 }

@@ -11,12 +11,24 @@ const questionSchema = new mongoose.Schema(
       },
     },
     correctIndex: { type: Number, required: true, min: 0, max: 3 },
+    explanation: {
+      type: String,
+      trim: true,
+      maxlength: 1000,
+      default: "",
+    },
   },
   { _id: false }
 );
 
 const quizSchema = new mongoose.Schema(
   {
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
     title: { type: String, required: true, trim: true, maxlength: 100 },
     subject: { type: String, required: true, trim: true, maxlength: 60 },
     description: { type: String, required: true, trim: true, maxlength: 500 },

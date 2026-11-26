@@ -8,6 +8,7 @@ import cookieParser from "cookie-parser";
 import connectDB from "./config/db.js";
 import mongoose from "mongoose";
 import quizRoutes from "./routes/quizRoutes.js";
+import authRoutes from "./routes/authRoutes.js";
 import { seedQuizzes } from "./data/seedQuizzes.js";
 
 dotenv.config();
@@ -61,6 +62,7 @@ app.get("/api/health/db", (req, res) => {
 });
 
 app.use("/api/quizzes", quizRoutes);
+app.use("/api/auth", authRoutes);
 
 app.use((error, req, res, next) => {
   console.error("API request failed:", error.message);
