@@ -406,6 +406,7 @@ function App() {
       setAuthUser(data.user);
       setAuthOpen(false);
       setAuthForm({ name: "", email: "", password: "" });
+      window.location.reload();
     } catch (error) {
       setAuthError(error.message);
     } finally {
@@ -414,12 +415,17 @@ function App() {
   }
 
   async function logout() {
-    await fetch(apiUrl("/api/auth/logout"), {
-      method: "POST",
-      credentials: "include",
-    }).catch(() => {});
-    setAuthUser(null);
-    setProfileOpen(false);
+    try {
+      await readResponse(
+        await fetch(apiUrl("/api/auth/logout"), {
+          method: "POST",
+          credentials: "include",
+        })
+      );
+      window.location.reload();
+    } catch (error) {
+      setApiError(error.message);
+    }
   }
 
   async function openProfile() {
